@@ -1,14 +1,14 @@
 /*
  * script.js - Refactored JS extracted from original HTML.
- * Main improvements:
- * - Uses const/let and avoids globals.
- * - Consolidates repeated node update logic into helpers.
- * - Comments explain behavior and keep original functionality.
- * - Mobile optimizations (v3): disables physics, limits degrees, caches connections, reduces listeners, suspends on background, and reduces DPI.
+ * Mejoras:
+ * - Selección de nodos con un solo clic/tap tanto en desktop como en mobile.
+ * - Mejor feedback visual al seleccionar en dispositivos touch.
+ * - Configuración optimizada de interacción para mobile.
+ * - Comentarios adicionales para claridad.
  */
 
 (function () {
-  // Detect mobile/touch device
+  // Detectar dispositivo móvil/touch
   const isMobile = (
     'ontouchstart' in window ||
     navigator.maxTouchPoints > 0 ||
@@ -16,20 +16,20 @@
   );
   window.isMobile = isMobile;
 
-  // Reduce DPI for canvas rendering in mobile to avoid excessive GPU usage
+  // Reducir DPI para canvas en mobile
   if (isMobile) {
     window.devicePixelRatio = 1;
   }
 
-  // Limit render depth in mobile
+  // Limitar profundidad de renderizado en mobile
   let degrees = isMobile ? 1 : 2;
 
-  // Optionally disable physics on mobile (if exists)
+  // Opcionalmente desactivar físicas en mobile
   if (isMobile && window.network && window.network.setOptions) {
     window.network.setOptions({ physics: false });
   }
 
-  // Suspend updates/animations if app is in background (mobile friendly)
+  // Suspender updates/animaciones si la app está en background (mobile friendly)
   document.addEventListener('visibilitychange', () => {
     if (document.hidden && window.network && window.network.setOptions) {
       window.network.setOptions({ physics: false });
@@ -38,18 +38,18 @@
     }
   });
 
-  // Helper: get all nodes as object
+  // Helper: obtener todos los nodos como objeto
   function getAllNodesObj() {
     return nodes.get({ returnType: "Object" });
   }
 
-  // Helper: build update array from allNodes object and call nodes.update once
+  // Helper: actualizar todos los nodos de una vez
   function updateAllNodes(allNodes) {
     const updateArray = Object.keys(allNodes).map(id => allNodes[id]);
     nodes.update(updateArray);
   }
 
-  // Restore label helper used in multiple places
+  // Helper: restaurar label si estaba oculta
   function restoreLabelIfHidden(node) {
     if (node.hiddenLabel !== undefined) {
       node.label = node.hiddenLabel;
@@ -57,21 +57,26 @@
     }
   }
 
-  // Cache for connected nodes in highlight (mobile optimization)
+  // Cache de vecinos conectados (optimización mobile)
   const highlightCache = {};
 
-  // neighbourhoodHighlight: highlights neighbours of the selected node and dims others.
+  // Colores originales por nodo para restaurar
+  const nodeColors = {};
+
+  // neighbourhoodHighlight: resalta vecinos y atenúa el resto
   window.neighbourhoodHighlight = function (params) {
     const allNodes = getAllNodesObj();
 
     if (params.nodes && params.nodes.length > 0) {
-      // Activate highlight mode
+      // Activar highlight
       window.highlightActive = true;
       const selectedNode = params.nodes[0];
 
-      // Dim all nodes and hide labels (store them on hiddenLabel)
+      // Atenuar todos los nodos y ocultar labels
       for (const nodeId in allNodes) {
         const n = allNodes[nodeId];
+        // Guardar color original solo la primera vez
+        if (!nodeColors[nodeId]) nodeColors[nodeId] = n.color;
         n.color = "rgba(200,200,200,0.5)";
         if (n.hiddenLabel === undefined) {
           n.hiddenLabel = n.label;
@@ -79,14 +84,12 @@
         }
       }
 
-      // Cache connected nodes per node (mobile optimization)
+      // Buscar vecinos conectados (con cache en mobile)
       let allConnected;
       if (isMobile && highlightCache[selectedNode]) {
         allConnected = highlightCache[selectedNode];
       } else {
-        // Find first-degree connected nodes
         const connectedNodes = network.getConnectedNodes(selectedNode) || [];
-        // Find up to `degrees` neighborhood
         allConnected = Array.from(connectedNodes);
         for (let d = 1; d < degrees; d++) {
           const next = [];
@@ -99,7 +102,7 @@
         if (isMobile) highlightCache[selectedNode] = allConnected;
       }
 
-      // Lightly un-dim second-degree neighbors, restore their labels
+      // Atenuar menos los de segundo grado
       for (const id of allConnected) {
         if (allNodes[id]) {
           allNodes[id].color = "rgba(150,150,150,0.75)";
@@ -107,7 +110,7 @@
         }
       }
 
-      // Restore color/label for immediate neighbors and selected node
+      // Restaurar color y label a vecinos inmediatos y nodo seleccionado
       const connectedNodes = network.getConnectedNodes(selectedNode) || [];
       for (const id of connectedNodes) {
         if (allNodes[id]) {
@@ -116,16 +119,80 @@
         }
       }
       if (allNodes[selectedNode]) {
-        allNodes[selectedNode].color = nodeColors[selectedNode] || allNodes[selectedNode].color;
+        // Feedback visual especial para mobile: borde más grueso y color intenso
+        if (isMobile) {
+          allNodes[selectedNode].color = {
+            background: "#ff8800",
+            border: "#ff3c00",
+            highlight: { background: "#ffd180", border: "#ff3c00" }
+          };
+        } else {
+          allNodes[selectedNode].color = nodeColors[selectedNode] || allNodes[selectedNode].color;
+        }
         restoreLabelIfHidden(allNodes[selectedNode]);
       }
+
+      updateAllNodes(allNodes);
     } else if (window.highlightActive === true) {
-      // Reset to original colors and labels
-      // ... (original logic, no cambio aquí)
+      // Restaurar colores y labels originales
+      const allNodes = getAllNodesObj();
+      for (const nodeId in allNodes) {
+        const n = allNodes[nodeId];
+        n.color = nodeColors[nodeId] || n.color;
+        restoreLabelIfHidden(n);
+      }
+      updateAllNodes(allNodes);
+      window.highlightActive = false;
     }
   };
 
-  // Reduce global listeners in mobile (example: throttle resize if used)
+  // -- NUEVO: Selección con un solo clic/tap en cualquier dispositivo --
+  // Este código asume que 'network' es el objeto de vis.js ya inicializado.
+  // Si usas otra librería, adapta los nombres de eventos.
+
+  if (typeof network !== "undefined" && network && typeof network.on === "function") {
+    // Elimina listeners antiguos de click/selectNode para evitar doble ejecución
+    network.off("click");
+    network.off("selectNode");
+
+    // Listener universal: selecciona nodo con un solo clic o tap
+    network.on("selectNode", function(params) {
+      window.neighbourhoodHighlight(params);
+    });
+
+    // Además, para asegurar máxima compatibilidad touch, también en 'click'
+    network.on("click", function(params) {
+      if (params.nodes && params.nodes.length > 0) {
+        window.neighbourhoodHighlight(params);
+      } else {
+        // Si se hace click fuera de un nodo, deselecciona
+        window.neighbourhoodHighlight({nodes: []});
+      }
+    });
+
+    // Mejorar interacción para mobile
+    if (isMobile) {
+      network.setOptions({
+        interaction: {
+          multiselect: false,
+          dragNodes: true,
+          dragView: true,
+          zoomView: false, // Desactiva zoom accidental por doble tap
+          selectable: true,
+          selectConnectedEdges: false,
+          hover: true
+        }
+      });
+    } else {
+      network.setOptions({
+        interaction: {
+          hover: true
+        }
+      });
+    }
+  }
+
+  // Reducir listeners globales en mobile (ejemplo: throttle resize)
   if (isMobile && window.addEventListener) {
     const originalResize = window.onresize;
     let resizeTimeout;
@@ -133,9 +200,9 @@
       if (resizeTimeout) clearTimeout(resizeTimeout);
       resizeTimeout = setTimeout(() => {
         if (typeof originalResize === "function") originalResize(event);
-      }, 250); // throttle to 4fps
+      }, 250); // throttle a 4fps
     };
   }
 
-  // ...resto del código original...
+  // ...resto del código original si existe...
 })();
